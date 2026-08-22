@@ -1,11 +1,11 @@
 apiVersion: v2
 name: alertmanager-webhook-nagios-nrdp
 description: >-
-  Forwards Prometheus Alertmanager alerts to Nagios as passive check results
-  via the NRDP protocol
+  Forwards Prometheus Alertmanager alerts to Nagios as passive check results via
+  the NRDP protocol
 type: application
-version: 0.1.0
-appVersion: 0.1.0
+version: 0.2.0
+appVersion: 0.2.0
 home: https://github.com/splattner/alertmanager-webhook-nagios-nrdp
 sources:
   - https://github.com/splattner/alertmanager-webhook-nagios-nrdp
