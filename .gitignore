@@ -1,0 +1,6 @@
+/nrdp-webhook
+/dist/
+*.test
+*.out
+.idea/
+.vscode/

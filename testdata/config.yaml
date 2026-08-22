@@ -1,0 +1,27 @@
+server:
+  listen: ":8080"
+
+nrdp:
+  url: "https://nagios.example.com/nrdp/"
+  token: "${NRDP_TOKEN}"
+  timeout: 5s
+  retries: 2
+
+state:
+  severityLabel: severity
+  resolvedService: ok
+  resolvedHost: up
+
+rules:
+  - name: host-checks
+    match:
+      - { label: nagios_type, op: eq, value: host }
+    checkType: host
+    host:
+      template: "{{ .Labels.instance }}"
+
+  - name: default-service
+    host:
+      template: "{{ .Labels.instance }}"
+    service:
+      template: '{{ .Labels.nagios_service | default .Labels.alertname }}'

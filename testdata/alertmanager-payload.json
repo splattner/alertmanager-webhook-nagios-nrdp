@@ -1,0 +1,62 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"DiskSpaceLow\"}",
+  "status": "firing",
+  "receiver": "nrdp-webhook",
+  "externalURL": "http://alertmanager.example.com",
+  "commonLabels": {
+    "alertname": "DiskSpaceLow"
+  },
+  "commonAnnotations": {},
+  "groupLabels": {
+    "alertname": "DiskSpaceLow"
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "DiskSpaceLow",
+        "instance": "db1.example.com",
+        "severity": "critical"
+      },
+      "annotations": {
+        "summary": "Disk space on db1.example.com is critically low"
+      },
+      "startsAt": "2026-08-22T10:00:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus.example.com/graph",
+      "fingerprint": "abc123"
+    },
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "HighMemoryUsage",
+        "instance": "web1.example.com",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "Memory usage on web1.example.com has returned to normal"
+      },
+      "startsAt": "2026-08-22T09:00:00Z",
+      "endsAt": "2026-08-22T10:05:00Z",
+      "generatorURL": "http://prometheus.example.com/graph",
+      "fingerprint": "def456"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "NodeDown",
+        "instance": "worker3.example.com",
+        "severity": "critical",
+        "nagios_type": "host"
+      },
+      "annotations": {
+        "summary": "worker3.example.com is unreachable"
+      },
+      "startsAt": "2026-08-22T10:02:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus.example.com/graph",
+      "fingerprint": "ghi789"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "alertmanager-webhook-nagios-nrdp.fullname" . }}
+  labels:
+    {{- include "alertmanager-webhook-nagios-nrdp.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: alertmanager-webhook-nagios-nrdp
+      rules:
+        - alert: AlertmanagerWebhookNagiosNrdpDown
+          expr: up{job="{{ include "alertmanager-webhook-nagios-nrdp.fullname" . }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "nrdp-webhook target {{ "{{ $labels.instance }}" }} is down"
+            description: "Alertmanager alerts are not being forwarded to Nagios while this target is down."
+
+        - alert: AlertmanagerWebhookNagiosNrdpSubmissionFailures
+          expr: increase(nrdp_webhook_nrdp_submissions_total{result="error"}[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "NRDP submissions are failing on {{ "{{ $labels.instance }}" }}"
+            description: "Alerts are being mapped but rejected or unreachable at the Nagios NRDP endpoint."
+
+        - alert: AlertmanagerWebhookNagiosNrdpConfigReloadFailed
+          expr: increase(nrdp_webhook_config_reloads_total{result="error"}[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "Config reload failed on {{ "{{ $labels.instance }}" }}"
+            description: "The running config is stale; check nrdp-webhook logs for the parse/validation error."
+
+        - alert: AlertmanagerWebhookNagiosNrdpHighMappingUnmatchedRate
+          expr: increase(nrdp_webhook_mapping_unmatched_total[15m]) > 0
+          labels:
+            severity: info
+          annotations:
+            summary: "Alerts are matching no mapping rule on {{ "{{ $labels.instance }}" }}"
+            description: "These alerts are silently skipped - not forwarded to Nagios at all. Check the rules list against the alerts' labels."
+{{- end }}

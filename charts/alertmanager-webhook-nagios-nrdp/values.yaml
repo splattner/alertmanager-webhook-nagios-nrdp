@@ -1,0 +1,154 @@
+# -- Number of nrdp-webhook replicas. Each replica submits independently to
+# the same NRDP endpoint, so this is for the webhook's own availability, not
+# for spreading load across multiple Nagios instances.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/splattner/alertmanager-webhook-nagios-nrdp
+  # -- Defaults to "v<chart appVersion>" - GHCR images are published under
+  # their release tag (e.g. v0.1.0, with the v), not the bare semver
+  # Chart.yaml's appVersion holds. Set this explicitly (with or without a
+  # leading v) to override; an explicit value is used as-is, unprefixed.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- The webhook's config.yaml, mounted from a ConfigMap. See
+# docs/configuration.md for the full schema (nrdp, state, rules). Reference
+# the NRDP token and, if used, webhook auth credentials via ${ENV} - see
+# nrdpToken/webhookAuth below for how those env vars get populated.
+config: |
+  nrdp:
+    url: https://nagios.example.com/nrdp/
+    token: "${NRDP_TOKEN}"
+  rules:
+    - name: default-service
+      host:
+        template: "{{ .Labels.instance }}"
+      service:
+        template: "{{ .Labels.alertname }}"
+
+# -- Wires the NRDP token into the NRDP_TOKEN env var that `config`'s
+# ${NRDP_TOKEN} expands. Keeping the token in a Secret rather than inlined
+# in `config` (which ends up in a plaintext ConfigMap) is strongly
+# recommended.
+nrdpToken:
+  existingSecret: ""
+  existingSecretKey: "token"
+
+# -- Wires inbound webhook auth credentials into WEBHOOK_PASSWORD/
+# WEBHOOK_TOKEN env vars for `config`'s webhook.auth.password /
+# webhook.auth.token to expand via ${ENV}. Only the key(s) your
+# webhook.auth.type actually uses need to exist in the Secret.
+webhookAuth:
+  existingSecret: ""
+  passwordKey: "password"
+  tokenKey: "token"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+# resources:
+#   requests:
+#     cpu: 50m
+#     memory: 64Mi
+#   limits:
+#     memory: 128Mi
+
+tls:
+  server:
+    # -- Mounts existingSecret (a kubernetes.io/tls Secret: tls.crt, tls.key,
+    # optionally ca.crt for mTLS) at /etc/nrdp-webhook/tls, and switches the
+    # liveness/readiness probes to HTTPS. Reference the mounted paths from
+    # `config`'s `server.tls` (e.g. certFile: /etc/nrdp-webhook/tls/tls.crt).
+    enabled: false
+    existingSecret: ""
+  nrdp:
+    # -- Mounts existingSecret (a Secret containing ca.crt and, for a client
+    # certificate, tls.crt/tls.key) at /etc/nrdp-webhook/nrdp-tls, for
+    # trusting a self-signed Nagios/NRDP endpoint. Reference the mounted
+    # paths from `config`'s `nrdp.tls`.
+    enabled: false
+    existingSecret: ""
+
+# -- Extra volumes/mounts, e.g. a file needed by a custom setup.
+extraVolumes: []
+extraVolumeMounts: []
+
+# -- Extra container env vars, appended after NRDP_TOKEN/WEBHOOK_*.
+extraEnv: []
+# extraEnv:
+#   - name: SOME_VAR
+#     value: "some-value"
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+prometheusRule:
+  # -- Creates a PrometheusRule with starter alerts for the webhook itself
+  # (down, NRDP submission failures, config reload failures, alerts matching
+  # no mapping rule). Requires serviceMonitor.enabled (or equivalent scrape
+  # config) so the underlying metrics exist. `labels` is commonly needed to
+  # match your Prometheus Operator's ruleSelector, e.g.
+  # `{ release: kube-prometheus-stack }`.
+  enabled: false
+  labels: {}
+
+podDisruptionBudget:
+  # -- Creates a PodDisruptionBudget. Leave disabled at the default
+  # replicaCount of 1: a PDB requiring an available pod on a single-replica
+  # Deployment blocks voluntary node drains/evictions entirely.
+  enabled: false
+  # -- Takes precedence over maxUnavailable if set.
+  minAvailable: ""
+  maxUnavailable: 1
+
+networkPolicy:
+  # -- Creates a NetworkPolicy restricting inbound traffic on the webhook's
+  # port (alert ingestion and /metrics share one listener) to
+  # `ingress.from`. Egress is left unrestricted unless `egress` is set
+  # explicitly, since safely allow-listing just the Nagios/NRDP endpoint
+  # plus DNS is deployment-specific.
+  enabled: false
+  ingress:
+    # -- NetworkPolicyPeer list. Left empty, ingress.enabled=true still
+    # denies all ingress until this is set - required reading before
+    # enabling.
+    from: []
+    # from:
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: monitoring
+  egress: []
+  # egress:
+  #   - {}   # allow all egress, equivalent to having no NetworkPolicy
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

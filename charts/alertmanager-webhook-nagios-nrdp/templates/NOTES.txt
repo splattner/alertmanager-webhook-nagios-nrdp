@@ -1,0 +1,32 @@
+alertmanager-webhook-nagios-nrdp has been installed.
+
+Point an Alertmanager receiver at it:
+
+  receivers:
+    - name: nrdp-webhook
+      webhook_configs:
+        - url: http://{{ include "alertmanager-webhook-nagios-nrdp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/webhook
+{{- if not .Values.webhookAuth.existingSecret }}
+
+NOTE: webhook.auth is not configured (webhookAuth.existingSecret is empty),
+so /webhook accepts unauthenticated requests from anything that can reach
+it inside the cluster - requests that ultimately change state in Nagios.
+Set webhookAuth.existingSecret (with your config's webhook.auth.type set to
+"basic" or "bearer") or restrict access with networkPolicy.enabled, or both.
+{{- end }}
+
+{{- if not .Values.nrdpToken.existingSecret }}
+
+NOTE: nrdpToken.existingSecret is not set. Either set it, or make sure
+`config`'s nrdp.token is provided some other way (e.g. inlined directly,
+not recommended since `config` ends up in a plaintext ConfigMap).
+{{- end }}
+
+Check it's ready:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l "{{ include "alertmanager-webhook-nagios-nrdp.selectorLabels" . }}"
+
+Validate your config.yaml against the running image without deploying it:
+
+  docker run --rm -v $(pwd)/config.yaml:/etc/nrdp-webhook/config.yaml:ro \
+    {{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }} check
