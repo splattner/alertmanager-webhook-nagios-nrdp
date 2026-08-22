@@ -46,7 +46,10 @@ func Run(ctx context.Context, src Source, log *slog.Logger) {
 	timer.Reset(idleInterval)
 
 	for {
-		cfg, client := src()
+		// Only the interval is needed before waiting; the config and client
+		// are read again afterwards, since a reload may have changed either
+		// while the timer was running.
+		cfg, _ := src()
 		wait := idleInterval
 		if cfg.Enabled {
 			wait = time.Duration(cfg.Interval)
@@ -59,9 +62,7 @@ func Run(ctx context.Context, src Source, log *slog.Logger) {
 		case <-timer.C:
 		}
 
-		// Re-read after waiting: a reload may have changed things while the
-		// timer was running.
-		cfg, client = src()
+		cfg, client := src()
 		if !cfg.Enabled || client == nil {
 			continue
 		}
