@@ -188,3 +188,12 @@ jobs:
                   # The alert-templating trick ({{ "{{ $labels.x }}" }}) must
                   # render literally, not get evaluated as a Helm variable.
                   grep -q '{{ $labels.instance }}' /tmp/render-observability.yaml
+                  # The heartbeat alert is opt-in and must not appear by default.
+                  if grep -q 'HeartbeatStale' /tmp/render-observability.yaml; then
+                    echo "heartbeat alert should be opt-in, not rendered by default" >&2
+                    exit 1
+                  fi
+                  helm template nw ./charts/alertmanager-webhook-nagios-nrdp \
+                    --set prometheusRule.enabled=true \
+                    --set prometheusRule.heartbeatAlert.enabled=true \
+                    | grep -q 'AlertmanagerWebhookNagiosNrdpHeartbeatStale'

@@ -74,6 +74,21 @@ var DuplicateCheckResultsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 	Help: "Total number of checkresults that targeted the same host/service as another checkresult already produced within the same webhook payload.",
 })
 
+// HeartbeatsTotal counts heartbeat submissions, labeled by result.
+var HeartbeatsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "nrdp_webhook_heartbeats_total",
+	Help: "Total number of heartbeat submissions, labeled by result (ok|error).",
+}, []string{"result"})
+
+// HeartbeatLastSuccessTimestamp is when the last heartbeat was accepted by
+// NRDP, as a Unix timestamp. Useful for alerting on the alerting pipeline
+// from Prometheus's side, as a complement to the Nagios-side freshness
+// check the heartbeat exists to feed.
+var HeartbeatLastSuccessTimestamp = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "nrdp_webhook_heartbeat_last_success_timestamp_seconds",
+	Help: "Unix timestamp of the last heartbeat successfully submitted to NRDP.",
+})
+
 // ConfigReloadsTotal counts config (re)load attempts, labeled by result.
 var ConfigReloadsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "nrdp_webhook_config_reloads_total",
@@ -90,6 +105,8 @@ func init() {
 		TruncatedAlertsTotal,
 		SubmissionDuration,
 		DuplicateCheckResultsTotal,
+		HeartbeatsTotal,
+		HeartbeatLastSuccessTimestamp,
 		ConfigReloadsTotal,
 	)
 }

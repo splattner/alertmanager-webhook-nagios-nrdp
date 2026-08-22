@@ -43,6 +43,10 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := validateHeartbeat(cfg.Heartbeat); err != nil {
+		return fmt.Errorf("heartbeat: %w", err)
+	}
+
 	if len(cfg.Rules) == 0 {
 		return fmt.Errorf("rules must contain at least one rule")
 	}
@@ -112,6 +116,37 @@ func unknownState(state string, vocab map[string]int) error {
 	}
 	sort.Strings(valid)
 	return fmt.Errorf("unknown state %q (want one of: %s)", state, strings.Join(valid, ", "))
+}
+
+func validateHeartbeat(h HeartbeatConfig) error {
+	if !h.Enabled {
+		return nil
+	}
+	if h.Interval <= 0 {
+		return fmt.Errorf("interval must be positive")
+	}
+	if h.Host == "" {
+		return fmt.Errorf("host is required")
+	}
+
+	switch h.CheckType {
+	case CheckTypeService:
+		if h.Service == "" {
+			return fmt.Errorf("service is required when checkType is %q", CheckTypeService)
+		}
+	case CheckTypeHost:
+		if h.Service != "" {
+			return fmt.Errorf("service must not be set when checkType is %q", CheckTypeHost)
+		}
+	default:
+		return fmt.Errorf("unknown checkType %q (want %q or %q)", h.CheckType, CheckTypeService, CheckTypeHost)
+	}
+
+	vocab := States(h.CheckType)
+	if _, ok := vocab[h.State]; !ok {
+		return fmt.Errorf("state: %w", unknownState(h.State, vocab))
+	}
+	return nil
 }
 
 // validateURL rejects anything that is not an absolute http(s) URL. A bare
