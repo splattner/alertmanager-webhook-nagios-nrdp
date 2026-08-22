@@ -15,11 +15,36 @@ import (
 
 // Config is the webhook's top-level configuration.
 type Config struct {
-	Server  ServerConfig  `json:"server"`
-	Webhook WebhookConfig `json:"webhook,omitempty"`
-	NRDP    NRDPConfig    `json:"nrdp"`
-	State   StateConfig   `json:"state,omitempty"`
-	Rules   []RuleConfig  `json:"rules"`
+	Server    ServerConfig    `json:"server"`
+	Webhook   WebhookConfig   `json:"webhook,omitempty"`
+	NRDP      NRDPConfig      `json:"nrdp"`
+	State     StateConfig     `json:"state,omitempty"`
+	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
+	Rules     []RuleConfig    `json:"rules"`
+}
+
+// HeartbeatConfig submits a passive OK to a dedicated Nagios check on a
+// timer, independently of any alert traffic.
+//
+// Without it, this service failing is invisible to Nagios: alerts simply
+// stop arriving, which looks exactly like nothing being wrong. A heartbeat
+// turns that silence into a stale check - so point it at a Nagios object
+// with check_freshness enabled and a freshness_threshold comfortably above
+// Interval, and Nagios will raise the check itself when the pipeline dies.
+type HeartbeatConfig struct {
+	Enabled  bool     `json:"enabled,omitempty"`
+	Interval Duration `json:"interval,omitempty"`
+	// CheckType defaults to "service".
+	CheckType CheckType `json:"checkType,omitempty"`
+	Host      string    `json:"host,omitempty"`
+	// Service is required for a service-type heartbeat and must be empty
+	// for a host-type one.
+	Service string `json:"service,omitempty"`
+	// State is the state name submitted on each beat. Defaults to "ok"
+	// ("up" for a host check) - the point is liveness, not severity.
+	State string `json:"state,omitempty"`
+	// Output is the plugin output text for the beat.
+	Output string `json:"output,omitempty"`
 }
 
 // ServerConfig configures the webhook's own HTTP listener.
@@ -297,6 +322,25 @@ func applyDefaults(cfg *Config) {
 	for i := range cfg.Rules {
 		if cfg.Rules[i].CheckType == "" {
 			cfg.Rules[i].CheckType = CheckTypeService
+		}
+	}
+
+	if cfg.Heartbeat.Enabled {
+		if cfg.Heartbeat.CheckType == "" {
+			cfg.Heartbeat.CheckType = CheckTypeService
+		}
+		if cfg.Heartbeat.Interval == 0 {
+			cfg.Heartbeat.Interval = Duration(time.Minute)
+		}
+		if cfg.Heartbeat.State == "" {
+			if cfg.Heartbeat.CheckType == CheckTypeHost {
+				cfg.Heartbeat.State = "up"
+			} else {
+				cfg.Heartbeat.State = "ok"
+			}
+		}
+		if cfg.Heartbeat.Output == "" {
+			cfg.Heartbeat.Output = "alertmanager-webhook-nagios-nrdp is alive"
 		}
 	}
 }

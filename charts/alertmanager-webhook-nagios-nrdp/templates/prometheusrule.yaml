@@ -37,6 +37,20 @@ spec:
             summary: "Config reload failed on {{ "{{ $labels.instance }}" }}"
             description: "The running config is stale; check nrdp-webhook logs for the parse/validation error."
 
+        {{- if .Values.prometheusRule.heartbeatAlert.enabled }}
+        - alert: AlertmanagerWebhookNagiosNrdpHeartbeatStale
+          # Complements the Nagios-side freshness check the heartbeat feeds:
+          # this fires from Prometheus even if Nagios itself is the thing
+          # that is unreachable. Only meaningful with heartbeat.enabled in
+          # the app's own config.
+          expr: time() - nrdp_webhook_heartbeat_last_success_timestamp_seconds > {{ .Values.prometheusRule.heartbeatAlert.staleAfterSeconds }}
+          labels:
+            severity: critical
+          annotations:
+            summary: "nrdp-webhook heartbeat to Nagios is stale on {{ "{{ $labels.instance }}" }}"
+            description: "No heartbeat has reached Nagios recently; alert forwarding is likely broken."
+        {{- end }}
+
         - alert: AlertmanagerWebhookNagiosNrdpHighMappingUnmatchedRate
           expr: increase(nrdp_webhook_mapping_unmatched_total[15m]) > 0
           labels:

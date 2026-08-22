@@ -21,6 +21,10 @@ configurable rule engine.
 - **Configurable severity mapping.** Which alert label carries severity, and
   how its values map to Nagios state codes, is all config - resolved alerts
   always force OK/UP regardless of severity, so Nagios actually clears.
+- **Heartbeat / dead-man's-switch.** Optionally submits a passive OK to a
+  dedicated Nagios check on a timer, so this service failing shows up as a
+  stale check instead of as silence. See
+  [docs/configuration.md](docs/configuration.md#heartbeat).
 - **Hot config reload** on `SIGHUP`, a config file change (e.g. a mounted
   ConfigMap update), or `POST /-/reload` - no restart needed.
 - **Prometheus metrics** at `/metrics`, plus `/healthz`/`/readyz`.

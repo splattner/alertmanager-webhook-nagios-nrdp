@@ -16,6 +16,7 @@ server: { ... }    # optional - the webhook's own HTTP listener
 webhook: { ... }   # optional - inbound auth
 nrdp: { ... }      # required - the NRDP target
 state: { ... }     # optional - severity -> Nagios state mapping
+heartbeat: { ... } # optional - periodic liveness check result
 rules: [ ... ]     # required - at least one mapping rule
 ```
 
@@ -305,8 +306,55 @@ Exposed at `/metrics`:
 | `nrdp_webhook_nrdp_submissions_total{result}` | counter | NRDP submissions, `ok` or `error` |
 | `nrdp_webhook_checkresults_forwarded_total{result}` | counter | checkresults in those submissions |
 | `nrdp_webhook_nrdp_submission_duration_seconds` | histogram | submission latency, retries included |
+| `nrdp_webhook_heartbeats_total{result}` | counter | heartbeat submissions, `ok` or `error` |
+| `nrdp_webhook_heartbeat_last_success_timestamp_seconds` | gauge | when the last heartbeat was accepted |
 | `nrdp_webhook_config_reloads_total{result}` | counter | config load/reload attempts |
 
 The two "skipped" counters are worth alerting on: an alert counted there
 reached this service and then went nowhere, which looks identical to
 "nothing was wrong" from Nagios's side.
+
+## `heartbeat`
+
+Alert forwarding is a silent-failure pipeline: if this service, or
+Alertmanager, or the network between them stops working, Nagios receives no
+checkresults - which is indistinguishable from nothing being wrong.
+
+A heartbeat submits a passive OK to a dedicated check on a timer,
+independently of alert traffic, so that silence becomes a *stale check*
+that Nagios can raise on its own.
+
+```yaml
+heartbeat:
+  enabled: true
+  interval: 60s                       # default
+  checkType: service                  # service (default) | host
+  host: "nagios-webhook"
+  service: "alertmanager-pipeline"    # required for checkType: service
+  state: ok                           # default (up for a host check)
+  output: "alertmanager-webhook-nagios-nrdp is alive"   # default
+```
+
+On the Nagios side, the object it targets must have `check_freshness 1`
+with a `freshness_threshold` comfortably above `interval` (two or three
+beats' worth is a reasonable starting point), and a `check_command` that
+reports CRITICAL - that command is what Nagios runs when the check goes
+stale, and is the actual alert.
+
+The heartbeat is reconfigured by a config reload like everything else,
+including being enabled or disabled outright, without a restart. It never
+takes the process down: a failed beat is logged and counted
+(`nrdp_webhook_heartbeats_total{result="error"}`) and the next beat
+retries, since a heartbeat that killed the process on a transient NRDP blip
+would take alert forwarding with it.
+
+`nrdp_webhook_heartbeat_last_success_timestamp_seconds` exposes the same
+signal to Prometheus, which is useful for alerting on the pipeline from the
+Prometheus side as well:
+
+```yaml
+- alert: NrdpWebhookHeartbeatStale
+  expr: time() - nrdp_webhook_heartbeat_last_success_timestamp_seconds > 300
+  annotations:
+    summary: "nrdp-webhook has not reached Nagios in 5 minutes"
+```

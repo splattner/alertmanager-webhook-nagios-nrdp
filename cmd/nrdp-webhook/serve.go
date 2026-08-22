@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
+	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/heartbeat"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/mapping"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/metrics"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/nrdp"
@@ -158,6 +159,16 @@ func runServe(configPath string) error {
 	log.Info("config loaded", "path", configPath)
 
 	go watchReload(ctx, configPath, log, reload)
+
+	// Reads the live state on every beat, so enabling, disabling or
+	// retargeting the heartbeat takes effect on reload without a restart.
+	go heartbeat.Run(ctx, func() (config.HeartbeatConfig, heartbeat.Submitter) {
+		st := s.current.Load()
+		if st == nil {
+			return config.HeartbeatConfig{}, nil
+		}
+		return st.cfg.Heartbeat, st.client
+	}, log)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /webhook", s)

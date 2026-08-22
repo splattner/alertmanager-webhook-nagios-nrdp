@@ -119,6 +119,15 @@ prometheusRule:
   # `{ release: kube-prometheus-stack }`.
   enabled: false
   labels: {}
+  heartbeatAlert:
+    # -- Adds an alert firing when no heartbeat has reached Nagios recently.
+    # Only meaningful if `config` also sets `heartbeat.enabled: true`; with
+    # the heartbeat disabled the underlying metric never appears and the
+    # alert cannot fire, so it is off by default.
+    enabled: false
+    # -- Should be comfortably more than the config's heartbeat.interval -
+    # a few missed beats, not one.
+    staleAfterSeconds: 300
 
 podDisruptionBudget:
   # -- Creates a PodDisruptionBudget. Leave disabled at the default
