@@ -15,12 +15,47 @@ import (
 
 // Config is the webhook's top-level configuration.
 type Config struct {
-	Server    ServerConfig    `json:"server"`
-	Webhook   WebhookConfig   `json:"webhook,omitempty"`
-	NRDP      NRDPConfig      `json:"nrdp"`
-	State     StateConfig     `json:"state,omitempty"`
-	Heartbeat HeartbeatConfig `json:"heartbeat,omitempty"`
-	Rules     []RuleConfig    `json:"rules"`
+	Server      ServerConfig      `json:"server"`
+	Webhook     WebhookConfig     `json:"webhook,omitempty"`
+	NRDP        NRDPConfig        `json:"nrdp"`
+	State       StateConfig       `json:"state,omitempty"`
+	Heartbeat   HeartbeatConfig   `json:"heartbeat,omitempty"`
+	Aggregation AggregationConfig `json:"aggregation,omitempty"`
+	Rules       []RuleConfig      `json:"rules"`
+}
+
+// AggregationConfig controls what happens when several alerts in one
+// webhook payload resolve to the same Nagios host/service.
+//
+// Alertmanager groups alerts, so this is routine rather than exceptional -
+// and it is the whole point of a coarse rule (a static host with
+// service: "{{ .Labels.alertname }}"), which turns a group into a single
+// Nagios check that does not need a Nagios object per instance.
+//
+// Without merging, NRDP applies a batch in order and the last checkresult
+// silently wins, so one resolved member can clear a check while its
+// siblings are still firing. Merging is therefore on by default.
+type AggregationConfig struct {
+	// Enabled is a pointer so that an explicit `false` is distinguishable
+	// from an omitted field; it defaults to true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// IdentifyBy is the alert label used to name each member in the
+	// generated summary output (default "instance").
+	IdentifyBy string `json:"identifyBy,omitempty"`
+	// MaxListed caps how many members the summary names before falling
+	// back to "and N more"; Nagios truncates long plugin output. 0 means
+	// list none, leaving only the counts.
+	MaxListed *int `json:"maxListed,omitempty"`
+	// Output overrides the generated summary text. It is only used when a
+	// target actually has more than one alert - a lone alert keeps its own
+	// output, so enabling aggregation changes nothing for targets that
+	// never collide.
+	Output *TargetTemplate `json:"output,omitempty"`
+}
+
+// AggregationEnabled reports whether merging is on, applying the default.
+func (c AggregationConfig) AggregationEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // HeartbeatConfig submits a passive OK to a dedicated Nagios check on a
@@ -323,6 +358,14 @@ func applyDefaults(cfg *Config) {
 		if cfg.Rules[i].CheckType == "" {
 			cfg.Rules[i].CheckType = CheckTypeService
 		}
+	}
+
+	if cfg.Aggregation.IdentifyBy == "" {
+		cfg.Aggregation.IdentifyBy = "instance"
+	}
+	if cfg.Aggregation.MaxListed == nil {
+		n := 5
+		cfg.Aggregation.MaxListed = &n
 	}
 
 	if cfg.Heartbeat.Enabled {

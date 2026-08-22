@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/checkresult"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/heartbeat"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/mapping"
@@ -46,11 +47,12 @@ func newServeCmd() *cobra.Command {
 // atomically so a request in flight always sees a consistent set of
 // engine/resolver/client, never a mix of an old engine with a new client.
 type appState struct {
-	cfg       *config.Config
-	engine    *mapping.Engine
-	resolver  *nrdpstate.Resolver
-	client    *nrdp.Client
-	serverTLS *tls.Config
+	cfg        *config.Config
+	engine     *mapping.Engine
+	resolver   *nrdpstate.Resolver
+	aggregator *checkresult.Aggregator
+	client     *nrdp.Client
+	serverTLS  *tls.Config
 }
 
 // server holds the mutable state a running `serve` invocation swaps as
@@ -79,6 +81,11 @@ func buildState(configPath string) (*appState, error) {
 		return nil, fmt.Errorf("build mapping engine: %w", err)
 	}
 
+	aggregator, err := checkresult.NewAggregator(cfg.Aggregation)
+	if err != nil {
+		return nil, err
+	}
+
 	var nrdpTLS *tls.Config
 	if cfg.NRDP.TLS != nil {
 		t := cfg.NRDP.TLS
@@ -98,11 +105,12 @@ func buildState(configPath string) (*appState, error) {
 	}
 
 	return &appState{
-		cfg:       cfg,
-		engine:    engine,
-		resolver:  nrdpstate.New(cfg.State),
-		client:    nrdp.New(cfg.NRDP, nrdpTLS),
-		serverTLS: serverTLS,
+		cfg:        cfg,
+		engine:     engine,
+		resolver:   nrdpstate.New(cfg.State),
+		aggregator: aggregator,
+		client:     nrdp.New(cfg.NRDP, nrdpTLS),
+		serverTLS:  serverTLS,
 	}, nil
 }
 
@@ -128,6 +136,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := &webhook.Handler{
 		Engine:        st.engine,
 		State:         st.resolver,
+		Aggregator:    st.aggregator,
 		Client:        st.client,
 		MaxBodyBytes:  st.cfg.Server.MaxBodyBytes,
 		SubmitTimeout: submitBudget(st.cfg.NRDP),

@@ -47,6 +47,13 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("heartbeat: %w", err)
 	}
 
+	if cfg.Aggregation.MaxListed != nil && *cfg.Aggregation.MaxListed < 0 {
+		return fmt.Errorf("aggregation.maxListed must not be negative")
+	}
+	if cfg.Aggregation.IdentifyBy == "" {
+		return fmt.Errorf("aggregation.identifyBy must not be empty")
+	}
+
 	if len(cfg.Rules) == 0 {
 		return fmt.Errorf("rules must contain at least one rule")
 	}

@@ -16,6 +16,11 @@ configurable rule engine.
   label matchers and Go-template host/service (and, optionally, check
   output) text - the first rule whose matchers hold wins. See
   [docs/configuration.md](docs/configuration.md).
+- **Group aggregation.** Alerts in one payload that land on the same Nagios
+  host/service are merged into a single checkresult - worst firing state
+  wins, with a summarised output - so one recovered member cannot clear a
+  check its siblings are still alerting on. A deliberately coarse rule
+  therefore gives you one Nagios check per Alertmanager group.
 - **Service and host checks.** A rule can submit an NRDP service checkresult
   (OK/WARNING/CRITICAL/UNKNOWN) or a host checkresult (UP/DOWN/UNREACHABLE).
 - **Configurable severity mapping.** Which alert label carries severity, and
