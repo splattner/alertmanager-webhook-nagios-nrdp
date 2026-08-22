@@ -2,10 +2,12 @@
 
 `nrdp-webhook` reads a single YAML file, given via `--config` (default
 `/etc/nrdp-webhook/config.yaml`). Any `${VAR_NAME}` in the file is expanded
-from the process environment before parsing; an unset variable is left
-untouched (so a typo fails loudly rather than silently becoming an empty
-string). Unknown top-level or nested keys are a parse error, not a silent
-no-op - run `nrdp-webhook check --config <path>` after any edit.
+from the process environment before parsing, and **a variable that is not
+set is a hard error** naming the variable - rather than silently becoming
+an empty string, which would reach Nagios as an empty credential and fail
+authentication with no hint that the environment was the problem. Unknown
+top-level or nested keys are likewise a parse error, not a silent no-op -
+run `nrdp-webhook check --config <path>` after any edit.
 
 ## Top-level shape
 
@@ -78,18 +80,34 @@ severity label become a Nagios state code.
 state:
   severityLabel: severity   # default - the label read for a firing alert
   service:
-    values: { ok: 0, warning: 1, critical: 2, unknown: 3 }   # default
-    unmatched: unknown       # default - used if severityLabel's value isn't a key above
+    # severity label value -> Nagios service state
+    values: { ok: ok, warning: warning, critical: critical, unknown: unknown }
+    unmatched: unknown      # used when the severity value isn't a key above
+    resolved: ok            # forced for every resolved alert
   host:
-    values: { up: 0, down: 1, unreachable: 2 }                # default
-    unmatched: down           # default
-  resolvedService: ok         # default - forced for every resolved alert
-  resolvedHost: up            # default
+    # severity label value -> Nagios host state
+    values: { ok: up, warning: down, critical: down, unknown: down }
+    unmatched: down
+    resolved: up
 ```
 
-A resolved alert always maps to `resolvedService`/`resolvedHost`,
-**regardless of its severity label** - this is what makes Nagios actually
-clear the check when Alertmanager resolves.
+**Keys on the left are severity values as they appear on your alerts; the
+values on the right are Nagios state names**, drawn from a fixed
+vocabulary:
+
+| check type | valid state names                       | codes   |
+|------------|------------------------------------------|---------|
+| service    | `ok`, `warning`, `critical`, `unknown`    | 0,1,2,3 |
+| host       | `up`, `down`, `unreachable`               | 0,1,2   |
+
+Naming states rather than numbering them means an out-of-range Nagios state
+cannot be expressed at all, and a typo (or borrowing a service state name
+for a host map) is caught by `nrdp-webhook check` rather than shipped to
+Nagios as a nonsense code.
+
+A resolved alert always takes `resolved`, **regardless of its severity
+label** - this is what makes Nagios actually clear the check when
+Alertmanager resolves.
 
 ## `rules`
 
@@ -175,6 +193,26 @@ rules:
 If `output` is unset (or its template renders from an empty string), the
 default fallback above still applies.
 
+### What happens to a rendered value before it is submitted
+
+Rendered host and service names, and the output text, are cleaned before
+they reach NRDP:
+
+- **Control characters** (newlines, tabs, NUL, …) become spaces everywhere.
+  A newline would otherwise be able to start a second line in Nagios's
+  external command pipe, so an alert annotation could inject an arbitrary
+  Nagios command.
+- **Semicolons are removed from host and service names** - they delimit the
+  fields of that same command, and are not legal in a Nagios object name
+  anyway. They are *kept* in `output`, which is the trailing field and
+  where they legitimately appear in prose.
+- **An empty host name** (or, for a service check, an empty service name)
+  causes the alert to be skipped with an error log and a bump of
+  `nrdp_webhook_invalid_target_total`, rather than submitting a nameless
+  checkresult that Nagios silently discards. This is almost always a
+  template referencing a label the alert does not carry - use
+  `{{ .Labels.foo | default "..." }}` if the label is genuinely optional.
+
 ## Alertmanager alert grouping
 
 Alertmanager's `group_by` only controls which alerts get bundled into one
@@ -217,8 +255,14 @@ nrdp:
 
 state:
   severityLabel: severity
-  resolvedService: ok
-  resolvedHost: up
+  service:
+    values: { ok: ok, warning: warning, critical: critical }
+    unmatched: unknown
+    resolved: ok
+  host:
+    values: { ok: up, warning: down, critical: down }
+    unmatched: down
+    resolved: up
 
 rules:
   - name: host-checks
@@ -246,3 +290,23 @@ rules:
 Validate any config with `nrdp-webhook check --config config.yaml`, and see
 the effect of a specific alert with `nrdp-webhook test --config config.yaml
 --alert alert.json` before pointing Alertmanager at it.
+
+## Metrics
+
+Exposed at `/metrics`:
+
+| metric | type | meaning |
+|--------|------|---------|
+| `nrdp_webhook_alerts_received_total` | counter | alerts seen across all webhook payloads |
+| `nrdp_webhook_mapping_unmatched_total` | counter | alerts skipped because no rule matched |
+| `nrdp_webhook_invalid_target_total` | counter | alerts skipped for an empty host/service name |
+| `nrdp_webhook_duplicate_checkresults_total` | counter | checkresults colliding on a target within one payload |
+| `nrdp_webhook_truncated_alerts_total` | counter | alerts Alertmanager dropped before sending |
+| `nrdp_webhook_nrdp_submissions_total{result}` | counter | NRDP submissions, `ok` or `error` |
+| `nrdp_webhook_checkresults_forwarded_total{result}` | counter | checkresults in those submissions |
+| `nrdp_webhook_nrdp_submission_duration_seconds` | histogram | submission latency, retries included |
+| `nrdp_webhook_config_reloads_total{result}` | counter | config load/reload attempts |
+
+The two "skipped" counters are worth alerting on: an alert counted there
+reached this service and then went nowhere, which looks identical to
+"nothing was wrong" from Nagios's side.

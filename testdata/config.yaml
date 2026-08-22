@@ -9,8 +9,14 @@ nrdp:
 
 state:
   severityLabel: severity
-  resolvedService: ok
-  resolvedHost: up
+  service:
+    values: { ok: ok, warning: warning, critical: critical }
+    unmatched: unknown
+    resolved: ok
+  host:
+    values: { ok: up, warning: down, critical: down }
+    unmatched: down
+    resolved: up
 
 rules:
   - name: host-checks

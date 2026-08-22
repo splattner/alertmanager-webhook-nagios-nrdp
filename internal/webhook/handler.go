@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/alertmanager"
-	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
+	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/checkresult"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/mapping"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/metrics"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/nrdp"
@@ -30,7 +31,10 @@ type Handler struct {
 	State        *nrdpstate.Resolver
 	Client       Submitter
 	MaxBodyBytes int64
-	Log          *slog.Logger
+	// SubmitTimeout caps one whole NRDP submission including retries, so a
+	// slow Nagios cannot pin a request handler open indefinitely.
+	SubmitTimeout time.Duration
+	Log           *slog.Logger
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,15 +47,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := h.mapAlerts(payload.Alerts)
 	metrics.AlertsReceivedTotal.Add(float64(len(payload.Alerts)))
+	if payload.TruncatedAlerts > 0 {
+		h.Log.Warn("alertmanager truncated alerts from this payload before sending it",
+			"truncated", payload.TruncatedAlerts, "received", len(payload.Alerts))
+		metrics.TruncatedAlertsTotal.Add(float64(payload.TruncatedAlerts))
+	}
 
+	results := h.mapAlerts(payload.Alerts)
 	if len(results) == 0 {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	if err := h.Client.Submit(r.Context(), results); err != nil {
+	// Deliberately not r.Context(): the alerts are already in hand, and
+	// abandoning a half-finished submission because Alertmanager hung up
+	// would lose them for the whole repeat_interval. The deadline instead
+	// bounds the work on its own terms - see Submit's own per-attempt
+	// timeout and retry budget.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.SubmitTimeout)
+	defer cancel()
+
+	start := time.Now()
+	err = h.Client.Submit(ctx, results)
+	metrics.SubmissionDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
 		h.Log.Error("nrdp submission failed", "error", err.Error(), "checkresults", len(results))
 		metrics.SubmissionsTotal.WithLabelValues("error").Inc()
 		metrics.CheckResultsForwardedTotal.WithLabelValues("error").Add(float64(len(results)))
@@ -89,8 +109,15 @@ func (h *Handler) mapAlerts(alerts []alertmanager.Alert) []nrdp.CheckResult {
 			continue
 		}
 
-		cr := checkResult(res, h.State, alert)
-		target := nrdp.CheckResult{Type: cr.Type, Hostname: cr.Hostname, ServiceName: cr.ServiceName}
+		cr, err := checkresult.Build(res, h.State, alert)
+		if err != nil {
+			h.Log.Error("skipping alert with an unusable Nagios target",
+				"error", err.Error(), "labels", alert.Labels)
+			metrics.InvalidTargetTotal.Inc()
+			continue
+		}
+
+		target := checkresult.Target(cr)
 		if seen[target] {
 			h.Log.Warn("multiple alerts in this batch map to the same Nagios target; only the last one's state will apply",
 				"type", cr.Type, "hostname", cr.Hostname, "service", cr.ServiceName, "labels", alert.Labels)
@@ -101,23 +128,4 @@ func (h *Handler) mapAlerts(alerts []alertmanager.Alert) []nrdp.CheckResult {
 		results = append(results, cr)
 	}
 	return results
-}
-
-func checkResult(res mapping.Result, state *nrdpstate.Resolver, alert alertmanager.Alert) nrdp.CheckResult {
-	output := alert.Output()
-	if res.HasOutput {
-		output = res.Output
-	}
-	cr := nrdp.CheckResult{
-		Type:     string(res.CheckType),
-		Hostname: res.Host,
-		Output:   output,
-	}
-	if res.CheckType == config.CheckTypeHost {
-		cr.State = state.HostState(alert)
-	} else {
-		cr.ServiceName = res.Service
-		cr.State = state.ServiceState(alert)
-	}
-	return cr
 }

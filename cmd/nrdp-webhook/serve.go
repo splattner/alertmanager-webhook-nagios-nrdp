@@ -120,14 +120,28 @@ func (s *server) applyConfig() error {
 // without a restart.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st := s.current.Load()
+	if st == nil {
+		http.Error(w, "config not loaded", http.StatusServiceUnavailable)
+		return
+	}
 	h := &webhook.Handler{
-		Engine:       st.engine,
-		State:        st.resolver,
-		Client:       st.client,
-		MaxBodyBytes: st.cfg.Server.MaxBodyBytes,
-		Log:          s.log,
+		Engine:        st.engine,
+		State:         st.resolver,
+		Client:        st.client,
+		MaxBodyBytes:  st.cfg.Server.MaxBodyBytes,
+		SubmitTimeout: submitBudget(st.cfg.NRDP),
+		Log:           s.log,
 	}
 	webhook.WithAuth(st.cfg.Webhook.Auth, h).ServeHTTP(w, r)
+}
+
+// submitBudget is the ceiling for one whole NRDP submission: every attempt
+// at its full timeout, plus the fixed backoff between them, plus a small
+// margin. Derived rather than separately configurable so that raising
+// nrdp.timeout or nrdp.retries cannot silently exceed it.
+func submitBudget(cfg config.NRDPConfig) time.Duration {
+	attempts := time.Duration(cfg.Retries + 1)
+	return attempts*time.Duration(cfg.Timeout) + time.Duration(cfg.Retries)*nrdp.RetryBackoff + time.Second
 }
 
 func runServe(configPath string) error {
@@ -146,7 +160,7 @@ func runServe(configPath string) error {
 	go watchReload(ctx, configPath, log, reload)
 
 	mux := http.NewServeMux()
-	mux.Handle("/webhook", s)
+	mux.Handle("POST /webhook", s)
 	mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry(), promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
@@ -167,7 +181,18 @@ func runServe(configPath string) error {
 	})
 
 	initialCfg := s.current.Load().cfg
-	httpSrv := &http.Server{Addr: initialCfg.Server.Listen, Handler: mux}
+	httpSrv := &http.Server{
+		Addr:    initialCfg.Server.Listen,
+		Handler: mux,
+		// Bounded so a slow or stalled peer cannot hold a connection (and
+		// its goroutine) open indefinitely. WriteTimeout has to clear the
+		// worst-case handler, which is dominated by the NRDP submission
+		// budget, or a slow Nagios would cut the response short.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      submitBudget(initialCfg.NRDP) + 30*time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	// Whether the listener serves TLS is fixed at startup from the initial
 	// config; a reload can rotate the certificate/key/client CA (read fresh

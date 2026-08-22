@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/alertmanager"
+	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/checkresult"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/mapping"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/nrdp"
@@ -62,17 +63,17 @@ func runTest(cmd *cobra.Command, configPath, alertPath string) error {
 			continue
 		}
 
-		output := a.Output()
-		if res.HasOutput {
-			output = res.Output
+		// Same builder the server uses, so what this prints is exactly what
+		// would be submitted - sanitization and target validation included.
+		cr, err := checkresult.Build(res, resolver, a)
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "  rule %s: SKIPPED - %v\n", res.Rule, err)
+			continue
 		}
-		cr := nrdp.CheckResult{Type: string(res.CheckType), Hostname: res.Host, ServiceName: res.Service, Output: output}
-		if res.CheckType == config.CheckTypeHost {
-			cr.State = resolver.HostState(a)
-			_, _ = fmt.Fprintf(out, "  rule %s: host=%s state=%d output=%q\n", res.Rule, res.Host, cr.State, output)
+		if cr.Type == string(config.CheckTypeHost) {
+			_, _ = fmt.Fprintf(out, "  rule %s: host=%s state=%d output=%q\n", res.Rule, cr.Hostname, cr.State, cr.Output)
 		} else {
-			cr.State = resolver.ServiceState(a)
-			_, _ = fmt.Fprintf(out, "  rule %s: host=%s service=%s state=%d output=%q\n", res.Rule, res.Host, res.Service, cr.State, output)
+			_, _ = fmt.Fprintf(out, "  rule %s: host=%s service=%s state=%d output=%q\n", res.Rule, cr.Hostname, cr.ServiceName, cr.State, cr.Output)
 		}
 		results = append(results, cr)
 	}

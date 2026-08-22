@@ -1,3 +1,4 @@
+{{- include "alertmanager-webhook-nagios-nrdp.validatePort" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
