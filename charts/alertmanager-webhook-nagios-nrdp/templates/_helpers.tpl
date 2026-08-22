@@ -39,6 +39,32 @@ app.kubernetes.io/name: {{ include "alertmanager-webhook-nagios-nrdp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+Fail the render if `config`'s server.listen port disagrees with
+service.port. The Service, the containerPort and the probes all follow
+service.port, but the process only listens where `config` tells it to - and
+`config` is an opaque string this chart cannot rewrite. Left unchecked, a
+mismatch installs cleanly and then fails its readiness probe forever, which
+is a far worse way to find out.
+
+An unparseable `config` is left alone: the app itself reports that far
+better than a template error can.
+*/}}
+{{- define "alertmanager-webhook-nagios-nrdp.validatePort" -}}
+{{- $cfg := fromYaml .Values.config -}}
+{{- if not $cfg.Error -}}
+{{- $listen := "" -}}
+{{- if $cfg.server -}}{{- $listen = $cfg.server.listen | default "" -}}{{- end -}}
+{{- /* ":8080" is the app's own default when server.listen is unset. */ -}}
+{{- $configured := "8080" -}}
+{{- if $listen -}}{{- $configured = last (splitList ":" $listen) -}}{{- end -}}
+{{- $expected := printf "%v" .Values.service.port -}}
+{{- if ne $configured $expected -}}
+{{- fail (printf "service.port is %s but config's server.listen resolves to port %s - the container would listen on %s while the Service and probes target %s. Set server.listen to \":%s\" in `config`, or change service.port to %s." $expected $configured $configured $expected $expected $configured) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "alertmanager-webhook-nagios-nrdp.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "alertmanager-webhook-nagios-nrdp.fullname" .) .Values.serviceAccount.name -}}

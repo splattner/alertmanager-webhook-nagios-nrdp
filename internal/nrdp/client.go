@@ -16,6 +16,12 @@ import (
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
 )
 
+// RetryBackoff is the fixed pause between submission attempts. A fixed
+// short backoff is enough here: NRDP submissions are small and infrequent
+// (one per Alertmanager webhook call), so this is not a high-QPS client
+// that needs jitter to avoid thundering-herd effects.
+const RetryBackoff = time.Second
+
 // Client submits checkresults to a single NRDP endpoint.
 type Client struct {
 	url        string
@@ -58,14 +64,10 @@ func (c *Client) Submit(ctx context.Context, results []CheckResult) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		if lastErr != nil {
-			// A fixed short backoff is enough here: NRDP submissions are
-			// small and infrequent (one per Alertmanager webhook call),
-			// this is not a high-QPS client that needs jitter/exponential
-			// backoff to avoid thundering-herd effects.
 			select {
 			case <-ctx.Done():
-				return lastErr
-			case <-time.After(time.Second):
+				return fmt.Errorf("submit to nrdp (gave up after %d attempt(s)): %w", attempt, lastErr)
+			case <-time.After(RetryBackoff):
 			}
 		}
 

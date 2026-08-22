@@ -11,15 +11,15 @@ func testStateConfig() config.StateConfig {
 	return config.StateConfig{
 		SeverityLabel: "severity",
 		Service: config.StateMapConfig{
-			Values:    map[string]int{"ok": 0, "warning": 1, "critical": 2, "unknown": 3},
+			Values:    map[string]string{"ok": "ok", "warning": "warning", "critical": "critical", "unknown": "unknown"},
 			Unmatched: "unknown",
+			Resolved:  "ok",
 		},
 		Host: config.StateMapConfig{
-			Values:    map[string]int{"up": 0, "down": 1, "unreachable": 2},
+			Values:    map[string]string{"ok": "up", "warning": "down", "critical": "down"},
 			Unmatched: "down",
+			Resolved:  "up",
 		},
-		ResolvedService: "ok",
-		ResolvedHost:    "up",
 	}
 }
 

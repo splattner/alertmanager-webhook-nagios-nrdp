@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/alertmanager"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
@@ -32,11 +33,9 @@ func testHandler(t *testing.T, submitter Submitter) *Handler {
 	t.Helper()
 	cfg := &config.Config{
 		State: config.StateConfig{
-			SeverityLabel:   "severity",
-			Service:         config.StateMapConfig{Values: map[string]int{"ok": 0, "critical": 2, "unknown": 3}, Unmatched: "unknown"},
-			Host:            config.StateMapConfig{Values: map[string]int{"up": 0, "down": 1}, Unmatched: "down"},
-			ResolvedService: "ok",
-			ResolvedHost:    "up",
+			SeverityLabel: "severity",
+			Service:       config.StateMapConfig{Values: map[string]string{"ok": "ok", "critical": "critical"}, Unmatched: "unknown", Resolved: "ok"},
+			Host:          config.StateMapConfig{Values: map[string]string{"ok": "up", "critical": "down"}, Unmatched: "down", Resolved: "up"},
 		},
 		Rules: []config.RuleConfig{{
 			Name:      "default",
@@ -50,11 +49,12 @@ func testHandler(t *testing.T, submitter Submitter) *Handler {
 		t.Fatalf("mapping.New: %v", err)
 	}
 	return &Handler{
-		Engine:       engine,
-		State:        nrdpstate.New(cfg.State),
-		Client:       submitter,
-		MaxBodyBytes: 1 << 20,
-		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Engine:        engine,
+		State:         nrdpstate.New(cfg.State),
+		Client:        submitter,
+		MaxBodyBytes:  1 << 20,
+		SubmitTimeout: 5 * time.Second,
+		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -229,3 +229,113 @@ var errNRDPDown = &submitError{"nrdp unreachable"}
 type submitError struct{ msg string }
 
 func (e *submitError) Error() string { return e.msg }
+
+func TestHandlerSkipsEmptyRenderedTarget(t *testing.T) {
+	sub := &fakeSubmitter{}
+	h := testHandler(t, sub)
+
+	// The alert carries no "instance" label, so the host template renders
+	// empty. Submitting that would give Nagios a nameless host, which it
+	// discards without telling anyone.
+	rec := postPayload(t, h, alertmanager.WebhookPayload{
+		Alerts: []alertmanager.Alert{
+			{Status: "firing", Labels: map[string]string{"alertname": "NoInstance", "severity": "critical"}},
+		},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(sub.submitted) != 0 {
+		t.Errorf("submitted = %+v, want nothing submitted for an empty hostname", sub.submitted)
+	}
+}
+
+func TestHandlerSanitizesNamesAndOutput(t *testing.T) {
+	sub := &fakeSubmitter{}
+	h := testHandler(t, sub)
+
+	postPayload(t, h, alertmanager.WebhookPayload{
+		Alerts: []alertmanager.Alert{{
+			Status: "firing",
+			Labels: map[string]string{
+				"instance":  "db1;evil",
+				"alertname": "Disk\nFull;INJECTED",
+				"severity":  "critical",
+			},
+			Annotations: map[string]string{
+				"summary": "disk full\nPROCESS_HOST_CHECK_RESULT;db1;0;pwned",
+			},
+		}},
+	})
+
+	if len(sub.submitted) != 1 {
+		t.Fatalf("submitted = %+v, want one submission", sub.submitted)
+	}
+	cr := sub.submitted[0][0]
+	if cr.Hostname != "db1evil" {
+		t.Errorf("Hostname = %q, want semicolon removed", cr.Hostname)
+	}
+	if strings.ContainsAny(cr.ServiceName, ";\n\r") {
+		t.Errorf("ServiceName = %q, still contains a delimiter", cr.ServiceName)
+	}
+	// Semicolons survive in output (it is the trailing field and they are
+	// legitimate in prose), but the newline must not.
+	if strings.ContainsAny(cr.Output, "\n\r") {
+		t.Errorf("Output = %q, still contains a newline", cr.Output)
+	}
+	if !strings.Contains(cr.Output, "disk full") {
+		t.Errorf("Output = %q, want the original text preserved", cr.Output)
+	}
+}
+
+func TestHandlerCountsTruncatedAlerts(t *testing.T) {
+	sub := &fakeSubmitter{}
+	h := testHandler(t, sub)
+	var buf bytes.Buffer
+	h.Log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	postPayload(t, h, alertmanager.WebhookPayload{
+		TruncatedAlerts: 7,
+		Alerts: []alertmanager.Alert{
+			{Status: "firing", Labels: map[string]string{"instance": "db1", "alertname": "A"}},
+		},
+	})
+
+	if !strings.Contains(buf.String(), "truncated") {
+		t.Errorf("expected a warning about truncated alerts, got:\n%s", buf.String())
+	}
+}
+
+func TestHandlerSubmitOutlivesClientDisconnect(t *testing.T) {
+	// Alertmanager hanging up must not abandon a submission whose alerts we
+	// already hold: they would be lost until the next repeat_interval.
+	ctx, cancel := context.WithCancel(context.Background())
+	var gotErr error
+	sub := &submitterFunc{fn: func(c context.Context, _ []nrdp.CheckResult) error {
+		gotErr = c.Err()
+		return nil
+	}}
+	h := testHandler(t, sub)
+
+	body, err := json.Marshal(alertmanager.WebhookPayload{
+		Alerts: []alertmanager.Alert{{Status: "firing", Labels: map[string]string{"instance": "db1", "alertname": "A"}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body)).WithContext(ctx)
+	cancel() // client is gone before the handler reaches the submission
+
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotErr != nil {
+		t.Errorf("Submit saw a cancelled context (%v); it should be detached from the request", gotErr)
+	}
+}
+
+type submitterFunc struct {
+	fn func(context.Context, []nrdp.CheckResult) error
+}
+
+func (s *submitterFunc) Submit(ctx context.Context, r []nrdp.CheckResult) error { return s.fn(ctx, r) }

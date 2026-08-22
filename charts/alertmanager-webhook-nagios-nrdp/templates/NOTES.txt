@@ -24,7 +24,8 @@ not recommended since `config` ends up in a plaintext ConfigMap).
 
 Check it's ready:
 
-  kubectl -n {{ .Release.Namespace }} get pods -l "{{ include "alertmanager-webhook-nagios-nrdp.selectorLabels" . }}"
+  kubectl -n {{ .Release.Namespace }} get pods \
+    -l app.kubernetes.io/name={{ include "alertmanager-webhook-nagios-nrdp.name" . }},app.kubernetes.io/instance={{ .Release.Name }}
 
 Validate your config.yaml against the running image without deploying it:
 

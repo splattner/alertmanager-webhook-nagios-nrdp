@@ -32,8 +32,11 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if cfg.State.SeverityLabel != "severity" {
 		t.Errorf("State.SeverityLabel = %q, want severity", cfg.State.SeverityLabel)
 	}
-	if cfg.State.Service.Values["critical"] != 2 {
-		t.Errorf("State.Service.Values[critical] = %d, want 2", cfg.State.Service.Values["critical"])
+	if cfg.State.Service.Values["critical"] != "critical" {
+		t.Errorf("State.Service.Values[critical] = %q, want %q", cfg.State.Service.Values["critical"], "critical")
+	}
+	if cfg.State.Service.Resolved != "ok" {
+		t.Errorf("State.Service.Resolved = %q, want ok", cfg.State.Service.Resolved)
 	}
 	if cfg.Rules[0].CheckType != CheckTypeService {
 		t.Errorf("Rules[0].CheckType = %q, want %q", cfg.Rules[0].CheckType, CheckTypeService)
@@ -135,20 +138,49 @@ rules:
 	}
 }
 
-func TestValidateResolvedKeyMustExistInValues(t *testing.T) {
-	raw := `
+func TestValidateRejectsUnknownStateName(t *testing.T) {
+	for _, tc := range []struct{ name, block string }{
+		{"service value", "state:\n  service:\n    values: {critical: bogus}\n"},
+		{"service unmatched", "state:\n  service:\n    unmatched: bogus\n"},
+		{"service resolved", "state:\n  service:\n    resolved: bogus\n"},
+		// "critical" is a valid *service* state but not a host state.
+		{"host value borrows service state", "state:\n  host:\n    values: {critical: critical}\n"},
+		{"host unmatched", "state:\n  host:\n    unmatched: bogus\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `
 nrdp:
   url: "https://nagios.example.com/nrdp/"
   token: "secret"
-state:
-  resolvedService: "nonexistent"
 rules:
   - name: default
     host: {template: "h"}
     service: {template: "s"}
-`
-	if _, err := Parse([]byte(raw)); err == nil {
-		t.Fatal("Parse: want error for resolvedService not in state.service.values, got nil")
+` + tc.block
+			if _, err := Parse([]byte(raw)); err == nil {
+				t.Fatalf("Parse: want error for %s, got nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestParseRejectsUnresolvedEnvVar(t *testing.T) {
+	raw := strings.Replace(minimalConfig, `token: "secret"`, `token: "${NOT_SET_ANYWHERE_XYZ}"`, 1)
+	_, err := Parse([]byte(raw))
+	if err == nil {
+		t.Fatal("Parse: want error for an unset ${ENV} reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "NOT_SET_ANYWHERE_XYZ") {
+		t.Errorf("Parse error = %v, want it to name the unresolved variable", err)
+	}
+}
+
+func TestValidateRejectsBadNRDPURL(t *testing.T) {
+	for _, bad := range []string{"nagios.example.com/nrdp/", "ftp://nagios/nrdp/", "https://"} {
+		raw := strings.Replace(minimalConfig, `url: "https://nagios.example.com/nrdp/"`, `url: "`+bad+`"`, 1)
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("Parse(%q): want error, got nil", bad)
+		}
 	}
 }
 

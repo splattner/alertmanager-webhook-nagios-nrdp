@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -96,27 +98,42 @@ type NRDPConfig struct {
 type StateConfig struct {
 	// SeverityLabel is the alert label read to determine severity for a
 	// firing alert (e.g. "severity"). Ignored for a resolved alert, which
-	// always maps to ResolvedService/ResolvedHost.
+	// always maps to the check type's Resolved state.
 	SeverityLabel string `json:"severityLabel"`
-	// Service maps a severity value to a Nagios service state (0=OK,
-	// 1=WARNING, 2=CRITICAL, 3=UNKNOWN).
+	// Service maps severity values to Nagios service states.
 	Service StateMapConfig `json:"service"`
-	// Host maps a severity value to a Nagios host state (0=UP, 1=DOWN,
-	// 2=UNREACHABLE).
+	// Host maps severity values to Nagios host states.
 	Host StateMapConfig `json:"host"`
-	// ResolvedService/ResolvedHost are severity-map keys (not raw state
-	// numbers) applied to every resolved alert regardless of its severity
-	// label, so Nagios actually clears the check on resolve.
-	ResolvedService string `json:"resolvedService"`
-	ResolvedHost    string `json:"resolvedHost"`
 }
 
-// StateMapConfig maps named severity values to Nagios state codes.
+// StateMapConfig maps an alert's severity label values to Nagios state
+// names. Keys are severity values as they appear on the alert; the values,
+// along with Unmatched and Resolved, are state *names* drawn from the
+// check type's vocabulary (see ServiceStates / HostStates) rather than raw
+// numbers, so a typo or an out-of-range code is a config error rather than
+// a nonsense state submitted to Nagios.
 type StateMapConfig struct {
-	Values map[string]int `json:"values"`
-	// Unmatched is the map key used when an alert's severity label value
-	// is not found in Values (including when the label is absent).
+	Values map[string]string `json:"values"`
+	// Unmatched is the state used when the alert's severity value is not a
+	// key in Values (including when the label is absent entirely).
 	Unmatched string `json:"unmatched"`
+	// Resolved is the state forced for every resolved alert, regardless of
+	// its severity label, so Nagios actually clears the check on resolve.
+	Resolved string `json:"resolved"`
+}
+
+// ServiceStates is the Nagios service-state vocabulary.
+var ServiceStates = map[string]int{"ok": 0, "warning": 1, "critical": 2, "unknown": 3}
+
+// HostStates is the Nagios host-state vocabulary.
+var HostStates = map[string]int{"up": 0, "down": 1, "unreachable": 2}
+
+// States returns the state vocabulary for a check type.
+func States(t CheckType) map[string]int {
+	if t == CheckTypeHost {
+		return HostStates
+	}
+	return ServiceStates
 }
 
 // CheckType selects what kind of Nagios passive check a rule submits.
@@ -184,7 +201,16 @@ func Load(path string) (*Config, error) {
 
 // Parse expands and validates already-read config bytes.
 func Parse(raw []byte) (*Config, error) {
-	expanded := expandEnv(raw)
+	expanded, unresolved := expandEnv(raw)
+	// An unset variable is a hard error rather than a silent empty string:
+	// left to expand to "", a missing NRDP_TOKEN would be submitted to
+	// Nagios as an empty credential and fail authentication with no hint
+	// that the environment, not the token, was the problem. Left as the
+	// literal "${NRDP_TOKEN}" it would fail just as confusingly.
+	if len(unresolved) > 0 {
+		sort.Strings(unresolved)
+		return nil, fmt.Errorf("unresolved environment variable(s) in config: ${%s}", strings.Join(unresolved, "}, ${"))
+	}
 
 	// Strict: an unknown key is an error, not a silent no-op. A typo like
 	// `sevirityLabel:` would otherwise parse cleanly, leave the default in
@@ -206,17 +232,25 @@ func Parse(raw []byte) (*Config, error) {
 
 var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// expandEnv replaces ${VAR} with the environment variable's value, left
-// untouched if unset, so a typo'd variable name fails validation loudly
-// (as an unresolved ${...}) rather than silently becoming an empty string.
-func expandEnv(raw []byte) []byte {
-	return envVarPattern.ReplaceAllFunc(raw, func(match []byte) []byte {
-		name := envVarPattern.FindSubmatch(match)[1]
-		if v, ok := os.LookupEnv(string(name)); ok {
+// expandEnv replaces ${VAR} with the environment variable's value and
+// reports the names of any variables that were not set, which Parse turns
+// into an error. Unset variables are deliberately not expanded to "" -
+// see Parse.
+func expandEnv(raw []byte) ([]byte, []string) {
+	var unresolved []string
+	seen := make(map[string]bool)
+	expanded := envVarPattern.ReplaceAllFunc(raw, func(match []byte) []byte {
+		name := string(envVarPattern.FindSubmatch(match)[1])
+		if v, ok := os.LookupEnv(name); ok {
 			return []byte(v)
+		}
+		if !seen[name] {
+			seen[name] = true
+			unresolved = append(unresolved, name)
 		}
 		return match
 	})
+	return expanded, unresolved
 }
 
 // applyDefaults fills in zero-valued fields with the webhook's defaults.
@@ -234,23 +268,30 @@ func applyDefaults(cfg *Config) {
 	if cfg.State.SeverityLabel == "" {
 		cfg.State.SeverityLabel = "severity"
 	}
+	// The defaults assume the conventional Prometheus severity vocabulary
+	// on the left. For host checks anything short of "ok" means the host is
+	// not answering, which is what a host-type alert normally encodes.
 	if cfg.State.Service.Values == nil {
-		cfg.State.Service.Values = map[string]int{"ok": 0, "warning": 1, "critical": 2, "unknown": 3}
+		cfg.State.Service.Values = map[string]string{
+			"ok": "ok", "warning": "warning", "critical": "critical", "unknown": "unknown",
+		}
 	}
 	if cfg.State.Service.Unmatched == "" {
 		cfg.State.Service.Unmatched = "unknown"
 	}
+	if cfg.State.Service.Resolved == "" {
+		cfg.State.Service.Resolved = "ok"
+	}
 	if cfg.State.Host.Values == nil {
-		cfg.State.Host.Values = map[string]int{"up": 0, "down": 1, "unreachable": 2}
+		cfg.State.Host.Values = map[string]string{
+			"ok": "up", "warning": "down", "critical": "down", "unknown": "down",
+		}
 	}
 	if cfg.State.Host.Unmatched == "" {
 		cfg.State.Host.Unmatched = "down"
 	}
-	if cfg.State.ResolvedService == "" {
-		cfg.State.ResolvedService = "ok"
-	}
-	if cfg.State.ResolvedHost == "" {
-		cfg.State.ResolvedHost = "up"
+	if cfg.State.Host.Resolved == "" {
+		cfg.State.Host.Resolved = "up"
 	}
 
 	for i := range cfg.Rules {

@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
+	"sort"
+	"strings"
 )
 
 // Validate checks a defaulted Config for internal consistency. It does not
@@ -23,14 +26,20 @@ func Validate(cfg *Config) error {
 	if cfg.NRDP.URL == "" {
 		return fmt.Errorf("nrdp.url must not be empty")
 	}
+	if err := validateURL(cfg.NRDP.URL); err != nil {
+		return fmt.Errorf("nrdp.url: %w", err)
+	}
 	if cfg.NRDP.Retries < 0 {
 		return fmt.Errorf("nrdp.retries must not be negative")
 	}
+	if cfg.NRDP.Timeout <= 0 {
+		return fmt.Errorf("nrdp.timeout must be positive")
+	}
 
-	if err := validateStateMap("state.service", cfg.State.Service, cfg.State.ResolvedService); err != nil {
+	if err := validateStateMap("state.service", cfg.State.Service, ServiceStates); err != nil {
 		return err
 	}
-	if err := validateStateMap("state.host", cfg.State.Host, cfg.State.ResolvedHost); err != nil {
+	if err := validateStateMap("state.host", cfg.State.Host, HostStates); err != nil {
 		return err
 	}
 
@@ -71,21 +80,53 @@ func validateWebhookAuth(auth *WebhookAuthConfig) error {
 	return nil
 }
 
-func validateStateMap(field string, m StateMapConfig, resolvedKey string) error {
-	if len(m.Values) == 0 {
-		return fmt.Errorf("%s.values must not be empty", field)
+// validateStateMap checks that every state name the map can produce is in
+// the check type's vocabulary. Because the config names states rather than
+// numbering them, this rules out an out-of-range Nagios state code by
+// construction - there is no way to spell one.
+func validateStateMap(field string, m StateMapConfig, vocab map[string]int) error {
+	for severity, state := range m.Values {
+		if _, ok := vocab[state]; !ok {
+			return fmt.Errorf("%s.values[%q]: %w", field, severity, unknownState(state, vocab))
+		}
 	}
 	if m.Unmatched == "" {
 		return fmt.Errorf("%s.unmatched must not be empty", field)
 	}
-	if _, ok := m.Values[m.Unmatched]; !ok {
-		return fmt.Errorf("%s.unmatched %q is not a key in %s.values", field, m.Unmatched, field)
+	if _, ok := vocab[m.Unmatched]; !ok {
+		return fmt.Errorf("%s.unmatched: %w", field, unknownState(m.Unmatched, vocab))
 	}
-	if resolvedKey == "" {
-		return fmt.Errorf("resolved state key must not be empty")
+	if m.Resolved == "" {
+		return fmt.Errorf("%s.resolved must not be empty", field)
 	}
-	if _, ok := m.Values[resolvedKey]; !ok {
-		return fmt.Errorf("resolved state key %q is not a key in %s.values", resolvedKey, field)
+	if _, ok := vocab[m.Resolved]; !ok {
+		return fmt.Errorf("%s.resolved: %w", field, unknownState(m.Resolved, vocab))
+	}
+	return nil
+}
+
+func unknownState(state string, vocab map[string]int) error {
+	valid := make([]string, 0, len(vocab))
+	for name := range vocab {
+		valid = append(valid, name)
+	}
+	sort.Strings(valid)
+	return fmt.Errorf("unknown state %q (want one of: %s)", state, strings.Join(valid, ", "))
+}
+
+// validateURL rejects anything that is not an absolute http(s) URL. A bare
+// host or a typo'd scheme would otherwise only surface as a confusing
+// transport error on the first alert.
+func validateURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("must be an http:// or https:// URL, got scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("must include a host")
 	}
 	return nil
 }

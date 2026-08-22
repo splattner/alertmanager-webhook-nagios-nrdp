@@ -38,6 +38,30 @@ var CheckResultsForwardedTotal = prometheus.NewCounterVec(prometheus.CounterOpts
 	Help: "Total number of checkresults included in NRDP submissions, labeled by result (ok|error).",
 }, []string{"result"})
 
+// InvalidTargetTotal counts alerts dropped because their rule rendered an
+// empty Nagios host or service name - typically a template referencing a
+// label the alert does not carry.
+var InvalidTargetTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "nrdp_webhook_invalid_target_total",
+	Help: "Total number of alerts skipped because the matched rule rendered an empty host or service name.",
+})
+
+// TruncatedAlertsTotal counts alerts Alertmanager itself dropped from a
+// payload before sending it (its truncatedAlerts field). These never reach
+// this service at all, so they are invisible except through this counter.
+var TruncatedAlertsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "nrdp_webhook_truncated_alerts_total",
+	Help: "Total number of alerts Alertmanager truncated from incoming payloads before sending them.",
+})
+
+// SubmissionDuration observes how long a full NRDP submission takes,
+// including any retries.
+var SubmissionDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:    "nrdp_webhook_nrdp_submission_duration_seconds",
+	Help:    "Duration of NRDP submissions, including retries.",
+	Buckets: prometheus.DefBuckets,
+})
+
 // DuplicateCheckResultsTotal counts checkresults that target the same
 // host (and, for a service check, service) as another checkresult already
 // produced within the same webhook payload - e.g. two alerts in one
@@ -62,6 +86,9 @@ func init() {
 		MappingUnmatchedTotal,
 		SubmissionsTotal,
 		CheckResultsForwardedTotal,
+		InvalidTargetTotal,
+		TruncatedAlertsTotal,
+		SubmissionDuration,
 		DuplicateCheckResultsTotal,
 		ConfigReloadsTotal,
 	)

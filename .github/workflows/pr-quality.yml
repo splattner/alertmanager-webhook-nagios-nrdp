@@ -132,6 +132,30 @@ jobs:
                   grep -q 'secretName: webhook-tls' /tmp/render-tls.yaml
                   grep -q 'secretName: nrdp-ca' /tmp/render-tls.yaml
 
+            - name: Render chart (service.port disagreeing with config's listen fails)
+              run: |
+                  if helm template nw ./charts/alertmanager-webhook-nagios-nrdp --set service.port=9090; then
+                    echo "expected this render to fail: the container would listen on 8080 while the Service targets 9090" >&2
+                    exit 1
+                  fi
+                  # Matching the two must still render.
+                  cat > /tmp/port-values.yaml <<'EOF'
+                  service:
+                    port: 9090
+                  config: |
+                    server:
+                      listen: ":9090"
+                    nrdp:
+                      url: https://nagios.example.com/nrdp/
+                      token: t
+                    rules:
+                      - name: r
+                        host: {template: "h"}
+                        service: {template: "s"}
+                  EOF
+                  helm template nw ./charts/alertmanager-webhook-nagios-nrdp \
+                    -f /tmp/port-values.yaml > /dev/null
+
             - name: Render chart (TLS enabled without existingSecret fails)
               run: |
                   if helm template nw ./charts/alertmanager-webhook-nagios-nrdp --set tls.server.enabled=true; then
