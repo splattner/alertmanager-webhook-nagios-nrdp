@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/splattner/alertmanager-webhook-nagios-nrdp/compare/v0.2.0...v0.2.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* merge checkresults that land on the same Nagios target ([#6](https://github.com/splattner/alertmanager-webhook-nagios-nrdp/issues/6)) ([35f8fcc](https://github.com/splattner/alertmanager-webhook-nagios-nrdp/commit/35f8fcc43cf22f88e42dc4ec93cc573f80c365a4))
+
 ## [0.2.0](https://github.com/splattner/alertmanager-webhook-nagios-nrdp/compare/v0.1.0...v0.2.0) (2026-08-22)
 
 
