@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/alertmanager"
+	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/checkresult"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/mapping"
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/nrdp"
@@ -48,8 +49,13 @@ func testHandler(t *testing.T, submitter Submitter) *Handler {
 	if err != nil {
 		t.Fatalf("mapping.New: %v", err)
 	}
+	aggregator, err := checkresult.NewAggregator(config.AggregationConfig{IdentifyBy: "instance"})
+	if err != nil {
+		t.Fatalf("checkresult.NewAggregator: %v", err)
+	}
 	return &Handler{
 		Engine:        engine,
+		Aggregator:    aggregator,
 		State:         nrdpstate.New(cfg.State),
 		Client:        submitter,
 		MaxBodyBytes:  1 << 20,
@@ -166,46 +172,6 @@ func TestHandlerUsesRuleOutputTemplate(t *testing.T) {
 
 	if len(sub.submitted) != 1 || sub.submitted[0][0].Output != "custom output for DiskFull" {
 		t.Errorf("submitted = %+v, want the rule's output template to override the summary annotation", sub.submitted)
-	}
-}
-
-func TestHandlerGroupedAlertsCollidingOnSameTarget(t *testing.T) {
-	sub := &fakeSubmitter{}
-	h := testHandler(t, sub)
-	var buf bytes.Buffer
-	h.Log = slog.New(slog.NewTextHandler(&buf, nil))
-
-	// Two distinct alerts (different alertname) that a coarse rule maps to
-	// the same host+service - simulates an Alertmanager group where the
-	// mapping rule doesn't key on whatever varies between them.
-	var err error
-	h.Engine, err = mapping.New(&config.Config{Rules: []config.RuleConfig{{
-		Name:      "default",
-		CheckType: config.CheckTypeService,
-		Host:      &config.TargetTemplate{Template: "{{ .Labels.instance }}"},
-		Service:   &config.TargetTemplate{Template: "static-service"},
-	}}})
-	if err != nil {
-		t.Fatalf("mapping.New: %v", err)
-	}
-
-	rec := postPayload(t, h, alertmanager.WebhookPayload{
-		Alerts: []alertmanager.Alert{
-			{Status: "firing", Labels: map[string]string{"instance": "db1", "alertname": "AlertA", "severity": "critical"}},
-			{Status: "firing", Labels: map[string]string{"instance": "db1", "alertname": "AlertB", "severity": "critical"}},
-		},
-	})
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	// Both checkresults are still submitted - nrdp-webhook does not silently
-	// drop either one, it only surfaces that they collide.
-	if len(sub.submitted) != 1 || len(sub.submitted[0]) != 2 {
-		t.Fatalf("submitted = %+v, want one submission of two checkresults", sub.submitted)
-	}
-	if !strings.Contains(buf.String(), "same Nagios target") {
-		t.Errorf("expected a warning log about the colliding target, got:\n%s", buf.String())
 	}
 }
 
@@ -339,3 +305,43 @@ type submitterFunc struct {
 }
 
 func (s *submitterFunc) Submit(ctx context.Context, r []nrdp.CheckResult) error { return s.fn(ctx, r) }
+
+func TestHandlerMergesGroupedAlertsOnSameTarget(t *testing.T) {
+	sub := &fakeSubmitter{}
+	h := testHandler(t, sub)
+
+	// A coarse rule: every alert in the group lands on one static target,
+	// which is exactly how you get a single Nagios check per group.
+	var err error
+	h.Engine, err = mapping.New(&config.Config{Rules: []config.RuleConfig{{
+		Name:      "per-alertname",
+		CheckType: config.CheckTypeService,
+		Host:      &config.TargetTemplate{Template: "nagios-am"},
+		Service:   &config.TargetTemplate{Template: "{{ .Labels.alertname }}"},
+	}}})
+	if err != nil {
+		t.Fatalf("mapping.New: %v", err)
+	}
+
+	rec := postPayload(t, h, alertmanager.WebhookPayload{
+		Alerts: []alertmanager.Alert{
+			{Status: "firing", Labels: map[string]string{"alertname": "DiskFull", "instance": "srv-1", "severity": "critical"}},
+			{Status: "firing", Labels: map[string]string{"alertname": "DiskFull", "instance": "srv-2", "severity": "ok"}},
+			{Status: "resolved", Labels: map[string]string{"alertname": "DiskFull", "instance": "srv-3", "severity": "critical"}},
+		},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(sub.submitted) != 1 || len(sub.submitted[0]) != 1 {
+		t.Fatalf("submitted = %+v, want one submission of one merged checkresult", sub.submitted)
+	}
+	cr := sub.submitted[0][0]
+	if cr.State != 2 {
+		t.Errorf("State = %d, want 2: srv-3 resolving must not clear a check srv-1 is still critical on", cr.State)
+	}
+	if !strings.Contains(cr.Output, "srv-1") {
+		t.Errorf("Output = %q, want the firing members named", cr.Output)
+	}
+}

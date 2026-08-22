@@ -27,8 +27,11 @@ type Submitter interface {
 // Handler receives an Alertmanager webhook payload, maps and scores each
 // alert, and submits the batch to NRDP as one request.
 type Handler struct {
-	Engine       *mapping.Engine
-	State        *nrdpstate.Resolver
+	Engine *mapping.Engine
+	State  *nrdpstate.Resolver
+	// Aggregator merges checkresults that land on the same Nagios target
+	// within one payload.
+	Aggregator   *checkresult.Aggregator
 	Client       Submitter
 	MaxBodyBytes int64
 	// SubmitTimeout caps one whole NRDP submission including retries, so a
@@ -88,13 +91,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // counting) any that match no mapping rule. One alert failing to map does
 // not fail the rest of the batch.
 func (h *Handler) mapAlerts(alerts []alertmanager.Alert) []nrdp.CheckResult {
-	results := make([]nrdp.CheckResult, 0, len(alerts))
+	entries := make([]checkresult.Entry, 0, len(alerts))
 	// seen tracks which (type, host, service) targets have already appeared
-	// in this payload. Alertmanager can batch several distinct alerts into
-	// one webhook call (grouping), and if two of them render to the same
-	// Nagios target, NRDP applies checkresults in order - only the last one
-	// in the submission actually determines the resulting state. That's
-	// silent unless logged/counted here.
+	// in this payload. Alertmanager batches grouped alerts into one webhook
+	// call, so several can land on the same Nagios target; the Aggregator
+	// merges those, and this only counts how often it happens.
 	seen := make(map[nrdp.CheckResult]bool, len(alerts))
 	for _, alert := range alerts {
 		res, ok, err := h.Engine.Resolve(alert)
@@ -119,13 +120,25 @@ func (h *Handler) mapAlerts(alerts []alertmanager.Alert) []nrdp.CheckResult {
 
 		target := checkresult.Target(cr)
 		if seen[target] {
-			h.Log.Warn("multiple alerts in this batch map to the same Nagios target; only the last one's state will apply",
-				"type", cr.Type, "hostname", cr.Hostname, "service", cr.ServiceName, "labels", alert.Labels)
 			metrics.DuplicateCheckResultsTotal.Inc()
 		}
 		seen[target] = true
 
-		results = append(results, cr)
+		entries = append(entries, checkresult.Entry{Result: cr, Alert: alert})
+	}
+
+	results, err := h.Aggregator.Merge(entries)
+	if err != nil {
+		// Only a bad aggregation output template can get here, and it would
+		// fail for every payload alike. Fall back to the unmerged results
+		// rather than dropping the batch: last-wins is wrong, but silence
+		// is worse.
+		h.Log.Error("aggregating checkresults failed, submitting them unmerged", "error", err.Error())
+		unmerged := make([]nrdp.CheckResult, 0, len(entries))
+		for _, e := range entries {
+			unmerged = append(unmerged, e.Result)
+		}
+		return unmerged
 	}
 	return results
 }

@@ -7,6 +7,38 @@ import (
 	"github.com/splattner/alertmanager-webhook-nagios-nrdp/internal/config"
 )
 
+// severity orders Nagios state codes by how bad they are, which is NOT the
+// numeric order of the codes themselves: CRITICAL is 2 while UNKNOWN is 3,
+// so a plain max() would rank "we don't know" above "it is down" and
+// under-report real outages. Same for hosts, where DOWN is 1 and
+// UNREACHABLE is 2.
+var severity = map[config.CheckType]map[int]int{
+	// ok < warning < unknown < critical
+	config.CheckTypeService: {0: 0, 1: 1, 3: 2, 2: 3},
+	// up < unreachable < down
+	config.CheckTypeHost: {0: 0, 2: 1, 1: 2},
+}
+
+// Worst returns whichever of the given Nagios state codes is the most
+// severe for the check type. It returns 0 (OK/UP) for an empty list.
+func Worst(t config.CheckType, states []int) int {
+	worst := 0
+	rank := -1
+	for _, s := range states {
+		r, ok := severity[t][s]
+		if !ok {
+			// Not a state this check type can hold. Config validation makes
+			// this unreachable, but treating an unknown code as maximally
+			// severe is the safe direction to guess in.
+			return s
+		}
+		if r > rank {
+			rank, worst = r, s
+		}
+	}
+	return worst
+}
+
 // Resolver computes Nagios state codes from a Config's StateConfig. cfg is
 // assumed to already be defaulted and validated (see config.Load).
 type Resolver struct {

@@ -17,6 +17,7 @@ webhook: { ... }   # optional - inbound auth
 nrdp: { ... }      # required - the NRDP target
 state: { ... }     # optional - severity -> Nagios state mapping
 heartbeat: { ... } # optional - periodic liveness check result
+aggregation: {...} # optional - merging alerts that share a Nagios target
 rules: [ ... ]     # required - at least one mapping rule
 ```
 
@@ -225,18 +226,83 @@ independently. Grouping is therefore transparent to rule matching and
 templating: nothing needs to be aware of it.
 
 What grouping *does* affect: every alert in one webhook call is submitted
-to NRDP as a single request (still one `<checkresult>` per alert - see
-[docs/nrdp.md](nrdp.md)). If two different alerts in the same group render
-to the same host+service (for example, a rule's `service` template is a
-literal string rather than derived from `alertname`), NRDP applies the
-batch's checkresults in order, so only the **last** one actually
-determines the resulting Nagios state - the earlier one's state is
-overwritten within the same submission, silently. `nrdp-webhook` cannot
-merge or pick a "worse" state on your behalf (it doesn't know your rules
-intend that), but it does detect the collision: it logs a warning and
-increments `nrdp_webhook_duplicate_checkresults_total`, so you can tell
-your mapping rule needs to key on something that varies between the
-alerts you don't want colliding.
+to NRDP as a single request (see [docs/nrdp.md](nrdp.md)), and several of
+those alerts can easily land on the same Nagios host/service. That is
+handled by `aggregation`, below.
+
+## `aggregation`
+
+When more than one alert in a payload resolves to the same Nagios target,
+their checkresults are **merged into one**. This is on by default.
+
+```yaml
+aggregation:
+  enabled: true         # default
+  identifyBy: instance  # default - the label naming each member in the summary
+  maxListed: 5          # default - cap before "and N more"; 0 lists none
+  output:               # optional - overrides the generated summary
+    template: '{{ .Firing }} firing of {{ .Total }} on {{ .Service }}'
+```
+
+- **State** is the most severe among the **firing** members. It only drops
+  to the resolved state once *every* member has resolved.
+- **Output** becomes a summary, e.g. `2 firing, 1 resolved: srv-1, srv-2`.
+- **A target with only one alert is left completely untouched** - it keeps
+  its own state and its own output - so aggregation changes nothing unless
+  alerts actually collide.
+
+### Why this is on by default
+
+Without merging, NRDP applies a batch's checkresults in order and the
+**last one silently wins**. Given a group where two servers are still
+critical and a third has just recovered, the recovery would clear the check
+while the outage is ongoing:
+
+```text
+srv-1 firing  CRITICAL ─┐
+srv-2 firing  CRITICAL ─┼─→ same target ─→ Nagios ends up OK   ✗
+srv-3 resolved      OK ─┘                  (last result wins)
+```
+
+Merging gives `CRITICAL` with output `2 firing, 1 resolved: srv-1, srv-2`.
+Set `enabled: false` to get the old ordering back; there is no good reason
+to, but the escape hatch exists.
+
+### Using it deliberately: one check per group
+
+Because merging keys on the rendered target, a *coarse* rule turns an
+entire Alertmanager group into a single Nagios check:
+
+```yaml
+rules:
+  - name: one-check-per-alertname
+    host:
+      template: "nagios-alertmanager"          # a static Nagios host
+    service:
+      template: "{{ .Labels.alertname }}"      # one service per alertname
+```
+
+This is often the better fit for Nagios. Mapping every alert to its own
+service requires a Nagios service object to exist for each `instance`
+value - and **Nagios silently discards checkresults for objects it does not
+know**, which NRDP's response cannot tell you about. A static, coarse
+target is defined once in Nagios and always exists.
+
+### A note on "worst"
+
+Nagios state codes are not ordered by severity: `CRITICAL` is 2 while
+`UNKNOWN` is 3, and `DOWN` is 1 while `UNREACHABLE` is 2. Merging uses
+explicit precedence, not the numeric maximum:
+
+- services: `ok` < `warning` < `unknown` < `critical`
+- hosts: `up` < `unreachable` < `down`
+
+Member names in the summary are deduplicated and sorted, so the same set of
+alerts always renders the same text - otherwise Nagios would record a
+changed plugin output on every `repeat_interval`.
+
+`nrdp_webhook_duplicate_checkresults_total` still counts collisions, which
+is now a measure of how much merging is doing rather than a warning.
 
 ## Full example
 
@@ -301,7 +367,7 @@ Exposed at `/metrics`:
 | `nrdp_webhook_alerts_received_total` | counter | alerts seen across all webhook payloads |
 | `nrdp_webhook_mapping_unmatched_total` | counter | alerts skipped because no rule matched |
 | `nrdp_webhook_invalid_target_total` | counter | alerts skipped for an empty host/service name |
-| `nrdp_webhook_duplicate_checkresults_total` | counter | checkresults colliding on a target within one payload |
+| `nrdp_webhook_duplicate_checkresults_total` | counter | alerts merged into an existing target within one payload (see `aggregation`) |
 | `nrdp_webhook_truncated_alerts_total` | counter | alerts Alertmanager dropped before sending |
 | `nrdp_webhook_nrdp_submissions_total{result}` | counter | NRDP submissions, `ok` or `error` |
 | `nrdp_webhook_checkresults_forwarded_total{result}` | counter | checkresults in those submissions |

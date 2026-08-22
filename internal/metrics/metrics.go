@@ -62,16 +62,14 @@ var SubmissionDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 	Buckets: prometheus.DefBuckets,
 })
 
-// DuplicateCheckResultsTotal counts checkresults that target the same
-// host (and, for a service check, service) as another checkresult already
-// produced within the same webhook payload - e.g. two alerts in one
-// Alertmanager group that render to the same Nagios host/service. NRDP
-// applies a batch's checkresults in order, so only the last one actually
-// determines the resulting Nagios state; this metric makes that silent
-// overwrite visible instead.
+// DuplicateCheckResultsTotal counts alerts that landed on a Nagios target
+// already claimed by an earlier alert in the same payload - e.g. several
+// alerts from one Alertmanager group rendering to the same host/service.
+// With aggregation enabled (the default) these are merged rather than left
+// to overwrite each other, so this measures how much merging is doing.
 var DuplicateCheckResultsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 	Name: "nrdp_webhook_duplicate_checkresults_total",
-	Help: "Total number of checkresults that targeted the same host/service as another checkresult already produced within the same webhook payload.",
+	Help: "Total number of alerts that targeted the same host/service as an earlier alert within the same webhook payload, and were therefore merged (see the aggregation config).",
 })
 
 // HeartbeatsTotal counts heartbeat submissions, labeled by result.

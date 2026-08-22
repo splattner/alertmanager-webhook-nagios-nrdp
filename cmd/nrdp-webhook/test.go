@@ -48,8 +48,13 @@ func runTest(cmd *cobra.Command, configPath, alertPath string) error {
 		return err
 	}
 
+	aggregator, err := checkresult.NewAggregator(cfg.Aggregation)
+	if err != nil {
+		return err
+	}
+
 	out := cmd.OutOrStdout()
-	results := make([]nrdp.CheckResult, 0, len(alerts))
+	entries := make([]checkresult.Entry, 0, len(alerts))
 	for i, a := range alerts {
 		_, _ = fmt.Fprintf(out, "=== alert %d: status=%s labels=%v ===\n", i, a.Status, a.Labels)
 
@@ -75,12 +80,30 @@ func runTest(cmd *cobra.Command, configPath, alertPath string) error {
 		} else {
 			_, _ = fmt.Fprintf(out, "  rule %s: host=%s service=%s state=%d output=%q\n", res.Rule, cr.Hostname, cr.ServiceName, cr.State, cr.Output)
 		}
-		results = append(results, cr)
+		entries = append(entries, checkresult.Entry{Result: cr, Alert: a})
+	}
+
+	// Merged exactly as the server would, so the dry-run cannot show a
+	// per-alert view of something that gets combined in production.
+	results, err := aggregator.Merge(entries)
+	if err != nil {
+		return err
 	}
 
 	if len(results) == 0 {
 		_, _ = fmt.Fprintln(out, "\nno checkresults would be submitted")
 		return nil
+	}
+
+	if len(results) != len(entries) {
+		_, _ = fmt.Fprintf(out, "\n--- after aggregation: %d alert(s) -> %d checkresult(s) ---\n", len(entries), len(results))
+		for _, cr := range results {
+			if cr.ServiceName != "" {
+				_, _ = fmt.Fprintf(out, "  host=%s service=%s state=%d output=%q\n", cr.Hostname, cr.ServiceName, cr.State, cr.Output)
+				continue
+			}
+			_, _ = fmt.Fprintf(out, "  host=%s state=%d output=%q\n", cr.Hostname, cr.State, cr.Output)
+		}
 	}
 
 	xmlData, err := nrdp.BuildXML(results)
